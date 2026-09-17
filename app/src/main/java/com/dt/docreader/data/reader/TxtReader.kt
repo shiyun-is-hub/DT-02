@@ -27,9 +27,9 @@ class TxtReader : DocumentReader {
             buffer.clear()
         }
 
-        text.split("\n").forEach { rawLine ->
-            val line = rawLine.trimEnd('\r')
-            val trimmed = line.trim()
+        // 用 lineSequence 避免 split 产生大数组
+        text.lineSequence().forEach { rawLine ->
+            val trimmed = rawLine.trim()
             when {
                 trimmed.isEmpty() -> flushBuffer()
                 trimmed.startsWith("#") -> {

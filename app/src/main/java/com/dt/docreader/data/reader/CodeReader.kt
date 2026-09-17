@@ -63,26 +63,43 @@ class CodeReader : DocumentReader {
 
     /**
      * 极简结构扫描：识别常见的函数/类/方法声明行。
-     * 只做「像不像声明」的启发式判断，不追求完备 —— 目标是有用而非准确。
+     *
+     * 性能要点：
+     * - 正则**预编译为常量**（初版每次调用都新建 5 个 Regex，非常伤）。
+     * - 只在文件前 MAX_SCAN_LINES 行内扫描，避免超大文件全量跑正则。
+     * - 收集到上限即立即停止。
      */
     private fun extractOutline(text: String): List<String> {
-        val patterns = listOf(
+        val out = ArrayList<String>(40)
+        var scanned = 0
+        for ((idx, raw) in text.lineSequence().withIndex()) {
+            if (idx >= MAX_SCAN_LINES || out.size >= 40) break
+            scanned++
+            if (raw.length > 160) continue
+            val line = raw.trim()
+            if (line.isEmpty()) continue
+            for (p in OUTLINE_PATTERNS) {
+                if (p.containsMatchIn(line)) {
+                    out.add("L${idx + 1}: ${line.take(120)}")
+                    break
+                }
+            }
+        }
+        return out
+    }
+
+    private companion object {
+        /** 结构扫描最多看这么多行（防止超大文件卡顿）。 */
+        const val MAX_SCAN_LINES = 4000
+
+        // 预编译正则（只创建一次）
+        val OUTLINE_PATTERNS: List<Regex> = listOf(
             Regex("""^\s*(?:public|private|internal|protected|open|abstract|sealed|final|static|async|export|default)\s*(?:class|interface|object|enum|struct|fun|function|def|fn|func|type)\s+\w+"""),
             Regex("""^\s*(?:class|interface|object|enum|struct|fun|function|def|fn|func|type|trait|impl)\s+\w+"""),
             Regex("""^\s*(?:public|private|protected|internal)?\s*(?:suspend\s+)?fun\s+\w+"""),
             Regex("""^\s*(?:public|private|protected|static|async)?\s*(?:[\w<>\[\],\s]+\s+)?\w+\s*\([^)]*\)\s*\{?\s*$"""),
             Regex("""^\s*(?:func|fn|def|function)\s+\w+""")
         )
-        val out = LinkedHashSet<String>()
-        text.lineSequence().forEachIndexed { idx, raw ->
-            if (out.size >= 40) return@forEachIndexed
-            val line = raw.trimEnd()
-            if (line.isBlank() || line.length > 160) return@forEachIndexed
-            if (patterns.any { it.containsMatchIn(line) }) {
-                out.add("L${idx + 1}: ${line.trim().take(120)}")
-            }
-        }
-        return out.toList()
     }
 
     private fun formatSize(bytes: Long): String = when {
