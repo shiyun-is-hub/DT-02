@@ -3,8 +3,11 @@ package com.dt.docreader.data
 import com.dt.docreader.data.reader.CodeReader
 import com.dt.docreader.data.reader.DocumentReader
 import com.dt.docreader.data.reader.MarkdownReader
+import com.dt.docreader.data.reader.PdfReader
+import com.dt.docreader.data.reader.PptReader
 import com.dt.docreader.data.reader.StructuredTextReader
 import com.dt.docreader.data.reader.TxtReader
+import com.dt.docreader.data.reader.WordReader
 import com.dt.docreader.domain.model.FileKind
 
 /**
@@ -35,7 +38,11 @@ object ReaderFactory {
         "c", "cpp", "cc", "cxx", "h", "hpp", "cs", "rs", "go", "swift",
         "php", "rb", "sh", "bash", "zsh", "fish", "sql", "lua", "dart",
         "r", "scala", "clj", "ex", "exs", "erl", "hs", "m", "mm",
-        "vb", "asm", "s", "pas", "pl", "pm", "groovy", "vue", "svelte"
+        "vb", "asm", "s", "pas", "pl", "pm", "groovy", "vue", "svelte",
+        // Office 文档（P4/P5：docx / pptx 零依赖解析；doc/ppt 给出转换提示）
+        "docx", "doc", "pptx", "ppt",
+        // PDF（占位：提示使用专用查看器）
+        "pdf"
     )
 
     /** 已注册的 Reader（顺序即优先级）。 */
@@ -43,10 +50,10 @@ object ReaderFactory {
         TxtReader(),
         MarkdownReader(),
         CodeReader(),
-        StructuredTextReader()
-        // P3:  PdfReader()
-        // P4:  WordReader()
-        // P5:  PptReader()
+        StructuredTextReader(),
+        WordReader(),
+        PptReader(),
+        PdfReader()
     )
 
     /**
@@ -84,5 +91,5 @@ object ReaderFactory {
 
     /** 供 UI 展示：已支持格式的简要说明。 */
     fun supportSummary(): String =
-        "支持：txt · md · 代码(kt/java/py/js…等 40+ 语言) · json/xml/html/csv/yaml/ini 配置"
+        "支持：txt · md · 代码(kt/java/py/js…等 40+ 语言) · json/xml/html/csv/yaml/ini · docx/pptx（PDF 待专用查看器）"
 }

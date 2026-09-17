@@ -33,7 +33,11 @@ object FileBrowser {
         "json", "json5", "xml", "html", "htm", "xhtml", "svg",
         "csv", "tsv", "yaml", "yml", "toml", "ini", "properties",
         "env", "cfg", "conf", "gradle", "pro", "sql", "gitignore",
-        "dockerfile", "makefile", "lua", "r", "dart", "vue", "svelte"
+        "dockerfile", "makefile", "lua", "r", "dart", "vue", "svelte",
+        // Office 文档（docx/pptx 可解析；doc/ppt 给提示）
+        "docx", "doc", "pptx", "ppt",
+        // PDF（占位提示，仍允许点击以显示说明）
+        "pdf"
     )
 
     /**
