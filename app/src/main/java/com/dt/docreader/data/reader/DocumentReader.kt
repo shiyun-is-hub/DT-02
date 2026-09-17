@@ -23,6 +23,28 @@ interface DocumentReader {
 
 /** 从 Uri 构造 FileSource 的工厂。 */
 object FileSourceFactory {
+
+    /**
+     * 直接从绝对路径构造（文件管理器场景）。
+     *
+     * 优点：不经过 ContentResolver，性能更好，且适用于 /sdcard 任意文件。
+     */
+    fun fromFile(file: java.io.File): FileSource {
+        val name = file.name
+        val kind = FileKind.fromExtension(name).let {
+            // 无扩展名的文件按纯文本处理（README / Dockerfile / LICENSE …）
+            if (it == FileKind.UNKNOWN && !name.contains('.')) FileKind.TXT else it
+        }
+        return FileSource(
+            fileName = name,
+            mimeType = null,
+            size = file.length(),
+            kind = kind
+        ) {
+            java.io.FileInputStream(file)
+        }
+    }
+
     fun fromUri(resolver: ContentResolver, uri: Uri): FileSource {
         var name = uri.lastPathSegment ?: "unknown"
         var size = 0L

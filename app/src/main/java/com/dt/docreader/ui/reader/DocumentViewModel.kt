@@ -38,4 +38,22 @@ class DocumentViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
     }
+
+    /** 直接从文件路径加载（文件管理器 / 最近列表）。 */
+    fun loadFile(path: String) {
+        _state.value = UiState.Loading
+        viewModelScope.launch {
+            val result = runCatching {
+                val file = java.io.File(path)
+                if (!file.exists()) throw java.io.FileNotFoundException("文件不存在：$path")
+                if (!file.canRead()) throw java.io.IOException("无读取权限：$path")
+                val source = FileSourceFactory.fromFile(file)
+                useCase.execute(source).getOrThrow()
+            }
+            _state.value = result.fold(
+                onSuccess = { UiState.Success(it) },
+                onFailure = { UiState.Error(it.message ?: "打开失败") }
+            )
+        }
+    }
 }

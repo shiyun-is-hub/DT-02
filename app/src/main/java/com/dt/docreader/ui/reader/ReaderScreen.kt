@@ -39,6 +39,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -130,43 +134,27 @@ private fun CenterText(text: String) {
  * - 把 DocumentModel 一次性展开为**扁平 RenderItem 列表**（代码块逐行、表格逐行）。
  * - 全部交给 LazyColumn，只有可见项会被组合/测量，滚动时复用节点。
  * - 展开结果用 remember(doc) 缓存，重组时不重算。
- * - 每个 item 有稳定 key，最大化复用。
+ * - key 使用**预先分配的 Int id**，避免每帧拼接字符串。
  */
 @Composable
 private fun DocumentContent(doc: DocumentModel) {
     val items = remember(doc) { RenderPlan.build(doc) }
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(0.dp)
-    ) {
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
         item(key = "__meta__") {
-            Spacer(Modifier.height(10.dp))
-            MetaHeader(doc)
-            Spacer(Modifier.height(8.dp))
-            HorizontalDivider(color = TermGreenDim)
-            Spacer(Modifier.height(6.dp))
+            MetaHeader(doc, modifier = Modifier.padding(horizontal = 12.dp))
+            HorizontalDivider(color = TermGreenDim, modifier = Modifier.padding(horizontal = 12.dp))
         }
 
-        items(items = items, key = { it.stableKey() }) { item ->
+        items(
+            items = items,
+            key = { it.id }        // Int key：零分配、零 hash 成本
+        ) { item ->
             RenderItemView(item)
         }
 
         item(key = "__tail__") { Spacer(Modifier.height(32.dp)) }
     }
-}
-
-/** 为每个渲染项生成稳定 key（决定复用效率）。 */
-private fun RenderItem.stableKey(): String = when (this) {
-    is RenderItem.CodeHeader -> "ch_$blockIndex"
-    is RenderItem.CodeLine -> "cl_${blockIndex}_$lineNo"
-    is RenderItem.CodeFooter -> "cf_$blockIndex"
-    is RenderItem.TableRow -> "tr_${blockIndex}_$rowIndex"
-    is RenderItem.TableFooter -> "tf_$blockIndex"
-    is RenderItem.ListItemRow -> "li_${blockIndex}_$index"
-    is RenderItem.SimpleBlock -> "sb_$blockIndex"
 }
 
 @Composable
@@ -188,9 +176,12 @@ private fun RenderItemView(item: RenderItem) {
 // ---------------- 元信息 ----------------
 
 @Composable
-private fun MetaHeader(doc: DocumentModel) {
+private fun MetaHeader(doc: DocumentModel, modifier: Modifier = Modifier) {
     val m = doc.meta
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Column(
+        modifier = modifier.padding(top = 10.dp, bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
         Text(
             text = "$ ${m.fileName}",
             style = MaterialTheme.typography.titleSmall,
@@ -222,7 +213,7 @@ private fun CodeHeaderRow(item: RenderItem.CodeHeader) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 8.dp, bottom = 2.dp),
+            .padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -250,35 +241,44 @@ private fun CodeHeaderRow(item: RenderItem.CodeHeader) {
 /**
  * 单行代码。
  *
- * 性能：每行是一个独立 LazyColumn item，不在组合期做任何分配以外的工作。
- * 采用**软换行**（softWrap = true），避免横向滚动导致的整行超长测量。
+ * 性能要点（关键）：
+ * - 把「行号 + 代码」合并进**一个 Text**（用 AnnotatedString 让行号着色），
+ *   使每行只剩 1 个绘制/布局节点，而不是初版的 Row + 2×Text（3 个节点）。
+ * - 行号用固定宽度占位（右对齐 + 单空格分隔），无需额外宽度修饰符。
+ * - 关闭软换行改为「不换行 + 超宽可横向滚动」在本架构下不可行，
+ *   因此保留 softWrap，但配合单节点结构，测量成本已大幅降低。
+ * - 字面量 style 全部预先构建（在 remember 中），避免每行重复构造 TextStyle。
  */
 @Composable
 private fun CodeLineRow(item: RenderItem.CodeLine) {
-    Row(
+    val style = remember {
+        TextStyle(
+            fontFamily = FontFamily.Monospace,
+            fontSize = CODE_FONT_SIZE,
+            color = TermCodeText
+        )
+    }
+    val lineNumberColor = TermLineNumber
+
+    val annotated = remember(item.numberText, item.text) {
+        buildAnnotatedString {
+            withStyle(SpanStyle(color = lineNumberColor)) {
+                append(item.numberText.padStart(4))
+                append("  ")
+            }
+            append(item.text)
+        }
+    }
+
+    Text(
+        text = annotated,
+        style = style,
+        softWrap = true,
         modifier = Modifier
             .fillMaxWidth()
             .background(TermGreenDeep)
-            .padding(vertical = 1.dp)
-    ) {
-        Text(
-            text = item.numberText,
-            fontFamily = FontFamily.Monospace,
-            fontSize = CODE_FONT_SIZE,
-            color = TermLineNumber,
-            modifier = Modifier
-                .width(40.dp)
-                .padding(end = 8.dp),
-            maxLines = 1
-        )
-        Text(
-            text = item.text,
-            fontFamily = FontFamily.Monospace,
-            fontSize = CODE_FONT_SIZE,
-            color = TermCodeText,
-            softWrap = true
-        )
-    }
+            .padding(horizontal = 12.dp, vertical = 1.dp)
+    )
 }
 
 // ---------------- 表格（逐行渲染） ----------------
@@ -289,7 +289,7 @@ private fun TableRowView(item: RenderItem.TableRow) {
         modifier = Modifier
             .fillMaxWidth()
             .background(TermGreenDeep)
-            .padding(vertical = 3.dp)
+            .padding(horizontal = 12.dp, vertical = 3.dp)
     ) {
         item.cells.forEach { cell ->
             Text(
@@ -313,7 +313,7 @@ private fun TableRowView(item: RenderItem.TableRow) {
 
 @Composable
 private fun ListItemView(item: RenderItem.ListItemRow) {
-    Row(modifier = Modifier.padding(vertical = 2.dp)) {
+    Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
         Text(
             text = item.marker + " ",
             style = MaterialTheme.typography.bodyLarge,
@@ -332,6 +332,7 @@ private fun ListItemView(item: RenderItem.ListItemRow) {
 
 @Composable
 private fun SimpleBlockView(block: Block) {
+    val pad = Modifier.padding(horizontal = 12.dp)
     when (block) {
         is Block.Heading -> {
             val size = when (block.level) {
@@ -345,7 +346,7 @@ private fun SimpleBlockView(block: Block) {
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace,
                 color = TermGreenBright,
-                modifier = Modifier.padding(top = 10.dp, bottom = 2.dp)
+                modifier = pad.padding(top = 10.dp, bottom = 2.dp)
             )
         }
 
@@ -353,16 +354,17 @@ private fun SimpleBlockView(block: Block) {
             block.text,
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onBackground,
-            modifier = Modifier.padding(vertical = 3.dp)
+            modifier = pad.padding(vertical = 3.dp)
         )
 
         is Block.ImageBlock -> Text(
             "[image] ${block.alt ?: block.uri}",
             color = TermOnBgVariant,
-            fontFamily = FontFamily.Monospace
+            fontFamily = FontFamily.Monospace,
+            modifier = pad
         )
 
-        is Block.Slide -> Column {
+        is Block.Slide -> Column(modifier = pad) {
             block.title?.let {
                 Text(it, style = MaterialTheme.typography.titleLarge, color = TermGreenBright)
             }
