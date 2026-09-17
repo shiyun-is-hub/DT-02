@@ -150,8 +150,16 @@ fun SettingsScreen(
                 )
             )
             InfoCard(
-                title = "规划中",
-                lines = listOf("PDF · Word · PPT（P3–P5）")
+                title = "Office 文档",
+                lines = listOf(
+                    "Word  docx（含标题/列表/表格）",
+                    "演示  pptx（多页幻灯片）",
+                    "旧版 doc / ppt 请另存为新格式"
+                )
+            )
+            InfoCard(
+                title = "PDF 暂不支持",
+                lines = listOf("将由独立的 PDF 查看器提供")
             )
 
             // ---- 关于 ----
