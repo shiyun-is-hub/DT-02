@@ -12,18 +12,41 @@ android {
         applicationId = "com.dt.docreader"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 3
+        versionName = "0.3.0"
         multiDexEnabled = true
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        debug {
+            // Debug 也开启代码压缩与资源裁剪 —— 体积优化关键。
+            // 用 R8 full mode 裁掉未用的 Compose/AndroidX 代码。
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            // debug 包保留可调试性（不破坏调试体验）
+            isDebuggable = true
+        }
+    }
+
+    // 体积优化：只保留 arm64-v8a（本项目面向 arm64 手机；如需兼容 32 位可加回 armeabi-v7a）
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a")
+            isUniversalApk = false
         }
     }
 
@@ -68,10 +91,9 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.ui)
     implementation(libs.androidx.ui.graphics)
-    implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-    implementation(libs.androidx.material.icons.extended)
-    implementation(libs.androidx.navigation.compose)
+    // 注意：已移除 material-icons-extended（体积巨大）与 navigation-compose（已用状态机替代），
+    //       全部图标改为 Tabler Icons 转 VectorDrawable。
 
     coreLibraryDesugaring(libs.desugar.jdk.libs)
 
