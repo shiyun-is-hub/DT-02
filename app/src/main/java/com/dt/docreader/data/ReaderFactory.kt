@@ -49,14 +49,37 @@ object ReaderFactory {
         // P5:  PptReader()
     )
 
+    /**
+     * FileKind -> Reader 的查找缓存。
+     *
+     * 性能：把「每次遍历列表」变成「一次性构建 + O(1) 查表」。
+     * 用 lazy 保证只构建一次，且不阻塞类加载。
+     */
+    private val kindCache: Map<FileKind, DocumentReader> by lazy {
+        val map = HashMap<FileKind, DocumentReader>(readers.size * 2)
+        for (reader in readers) {
+            for (kind in FileKind.entries) {
+                if (kind != FileKind.UNKNOWN && map[kind] == null && reader.supports(kind)) {
+                    map[kind] = reader
+                }
+            }
+        }
+        map
+    }
+
+    /** 扩展名支持判定缓存（避免重复 lowercase/substring 计算）。 */
+    private val supportedCache = HashMap<String, Boolean>(64)
+
     /** 根据类型解析可用 Reader，找不到返回 null。 */
-    fun resolve(kind: FileKind): DocumentReader? =
-        readers.firstOrNull { it.supports(kind) }
+    fun resolve(kind: FileKind): DocumentReader? = kindCache[kind]
 
     /** 是否支持该文件名。 */
     fun isSupported(fileName: String): Boolean {
-        val ext = fileName.substringAfterLast('.', "").lowercase()
-        return ext in SUPPORTED_EXTENSIONS
+        // 缓存整个文件名 -> 结果，避免热路径反复做字符串切分
+        return supportedCache.getOrPut(fileName) {
+            val ext = fileName.substringAfterLast('.', "").lowercase()
+            ext in SUPPORTED_EXTENSIONS
+        }
     }
 
     /** 供 UI 展示：已支持格式的简要说明。 */
