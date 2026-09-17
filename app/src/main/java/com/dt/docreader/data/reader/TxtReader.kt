@@ -50,7 +50,8 @@ class TxtReader : DocumentReader {
                 fileName = source.fileName,
                 fileSize = source.size,
                 kind = FileKind.TXT,
-                encoding = result.charset.name()
+                encoding = result.charset.name(),
+                language = "纯文本"
             ),
             sections = listOf(Section(title = null, pageIndex = 0, blocks = blocks))
         )

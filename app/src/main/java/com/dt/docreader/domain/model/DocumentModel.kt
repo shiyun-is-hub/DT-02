@@ -6,7 +6,9 @@ data class DocumentMeta(
     val fileSize: Long = 0L,
     val kind: FileKind = FileKind.UNKNOWN,
     val encoding: String? = null,
-    val pageCount: Int = 0
+    val pageCount: Int = 0,
+    /** 语言显示名（代码/结构化文本用），如 "Kotlin"。 */
+    val language: String? = null
 )
 
 /** 章节 / 页 / 幻灯片。 */
