@@ -151,4 +151,7 @@ dependencies {
     // ksp(libs.room.compiler)
 
     debugImplementation(libs.androidx.ui.tooling)
+
+    // ===== 单元测试（审计要求：纯逻辑层必须有测试）=====
+    testImplementation("junit:junit:4.13.2")
 }

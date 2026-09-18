@@ -80,12 +80,17 @@ object FileBrowser {
             .toList()
     }
 
-    /** 最常见的存储根目录候选 */
+    /**
+     * 存储根目录。
+     *
+     * 用 `Environment.getExternalStorageDirectory()` 而非硬编码
+     * `/storage/emulated/0`：不同设备/用户（如工作资料）下真实路径可能不同，
+     * 硬编码在多用户或特殊 ROM 上会失效。
+     */
     fun storageRoots(): List<File> =
-        listOf(
-            File("/storage/emulated/0"),
-            File("/sdcard")
-        ).distinctBy { it.absolutePath }.filter { it.exists() }
+        listOf(android.os.Environment.getExternalStorageDirectory())
+            .distinctBy { it.absolutePath }
+            .filter { it.exists() }
 
     fun formatSize(bytes: Long): String = when {
         bytes < 1024 -> "$bytes B"

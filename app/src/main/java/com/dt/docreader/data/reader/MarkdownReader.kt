@@ -40,7 +40,8 @@ class MarkdownReader : DocumentReader {
                 fileSize = source.size,
                 kind = FileKind.MARKDOWN,
                 encoding = decoded.charset.name(),
-                language = "Markdown"
+                language = "Markdown",
+                truncated = decoded.truncated
             ),
             sections = listOf(Section(title = null, pageIndex = 0, blocks = blocks)),
             rawText = decoded.text

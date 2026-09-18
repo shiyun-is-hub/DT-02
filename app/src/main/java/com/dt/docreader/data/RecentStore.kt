@@ -27,7 +27,8 @@ object RecentStore {
         val size: Long,
         val timestamp: Long
     ) {
-        val uri: Uri get() = Uri.fromFile(File(path))
+        /** 是否为 SAF `content://` 记录（而非文件系统路径）。 */
+        val isContentUri: Boolean get() = path.startsWith("content://")
     }
 
     fun list(context: Context): List<RecentItem> {
@@ -74,12 +75,36 @@ object RecentStore {
         context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().remove(KEY).apply()
     }
 
-    /** 过滤掉已经不存在的文件。 */
+    /**
+     * 过滤掉已经失效的记录。
+     *
+     * **注意**：不能简单地用 `File(path).exists()` 判定 ——
+     * SAF `content://` 记录用 `File()` 永远不存在，会被**误删**。
+     * 因此按记录类型分别判定：
+     * - `content://`：检查是否仍持有可读权限（`checkUriPermission`）；
+     * - 文件路径：检查 `File(path).exists()`。
+     */
     fun listExisting(context: Context): List<RecentItem> {
         val items = list(context)
-        val existing = items.filter { File(it.path).exists() }
+        val existing = items.filter { exists(context, it) }
         if (existing.size != items.size) persist(context, existing)
         return existing
+    }
+
+    /** 单条记录是否仍可用。 */
+    private fun exists(context: Context, item: RecentItem): Boolean {
+        return if (item.isContentUri) {
+            // 权限被撤销 / 文档被删除 -> 无读权限，视为失效
+            val uri = runCatching { Uri.parse(item.path) }.getOrNull() ?: return false
+            context.checkUriPermission(
+                uri,
+                android.os.Process.myPid(),
+                android.os.Process.myUid(),
+                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } else {
+            runCatching { File(item.path).exists() }.getOrDefault(false)
+        }
     }
 
     private fun persist(context: Context, items: List<RecentItem>) {

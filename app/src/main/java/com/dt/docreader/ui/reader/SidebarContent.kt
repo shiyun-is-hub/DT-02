@@ -428,7 +428,7 @@ private fun BookmarkPanel(
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(
-                                b.preview.ifBlank { "（无预览）" },
+                                b.label.ifBlank { "书签 #${b.blockIndex + 1}" },
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 11.5.sp,
                                 color = TermCodeText,

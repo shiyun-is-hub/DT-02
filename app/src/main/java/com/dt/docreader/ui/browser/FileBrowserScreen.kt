@@ -80,10 +80,14 @@ fun FileBrowserScreen(
     var showHidden by remember { mutableStateOf(false) }
     var textOnly by remember { mutableStateOf(true) }
 
-    val entries = remember(currentDir, showHidden, textOnly) {
+    // 区分「目录为空」与「读取失败」：
+    // 之前用 getOrDefault(emptyList()) 会把权限不足/IO 错误伪装成空目录，
+    // 用户看到空白页却不知道原因。
+    val loadResult = remember(currentDir, showHidden, textOnly) {
         runCatching { FileBrowser.list(currentDir, showHidden, textOnly) }
-            .getOrDefault(emptyList())
     }
+    val entries = loadResult.getOrDefault(emptyList())
+    val loadError = loadResult.exceptionOrNull()
     val parent = currentDir.parentFile
 
     Scaffold(
@@ -195,14 +199,26 @@ fun FileBrowserScreen(
 
             if (entries.isEmpty()) {
                 Box(Modifier.fillMaxSize()) {
-                    TermEmptyState(
-                        title = "# 此目录为空",
-                        lines = buildList {
-                            add(currentDir.absolutePath)
-                            if (textOnly) add("试试关闭「仅可读文档」筛选")
-                            if (!showHidden) add("隐藏文件未显示")
-                        }
-                    )
+                    if (loadError != null) {
+                        // 读取失败：明确告知原因，而不是伪装成空目录
+                        TermEmptyState(
+                            title = "# 无法读取此目录",
+                            lines = buildList {
+                                add(currentDir.absolutePath)
+                                add("原因：${loadError.message ?: loadError.javaClass.simpleName}")
+                                add("可能是权限不足或目录已被移除")
+                            }
+                        )
+                    } else {
+                        TermEmptyState(
+                            title = "# 此目录为空",
+                            lines = buildList {
+                                add(currentDir.absolutePath)
+                                if (textOnly) add("试试关闭「仅可读文档」筛选")
+                                if (!showHidden) add("隐藏文件未显示")
+                            }
+                        )
+                    }
                 }
             } else {
                 LazyColumn(

@@ -153,6 +153,9 @@ object RenderPlan {
     /** 表格单元格字符上限（超长单元格会让整行 Row 的测量成本爆炸）。 */
     private const val CELL_CHAR_LIMIT = 300
 
+    /** 列表项字符上限（超长项会让单个 item 测量成本爆炸）。 */
+    private const val LIST_ITEM_CHAR_LIMIT = 1000
+
     /**
      * 段落字符上限（超过即拆分为多个片段）。
      *
@@ -222,13 +225,20 @@ object RenderPlan {
 
                 is Block.BulletList -> {
                     block.items.forEachIndexed { idx, item ->
+                        // 列表项同样做字符截断：超长项会让单个 item 测量成本爆炸
+                        // （与代码行/表格单元格同一类问题）
+                        val shown = if (item.length > LIST_ITEM_CHAR_LIMIT) {
+                            item.take(LIST_ITEM_CHAR_LIMIT) + "  …[已截断]"
+                        } else {
+                            item
+                        }
                         out.add(
                             RenderItem.ListItemRow(
                                 id = nextId++,
                                 blockIndex = bi,
                                 index = idx,
                                 marker = if (block.ordered) "${idx + 1}." else "▸",
-                                text = item
+                                text = shown
                             )
                         )
                     }
@@ -384,19 +394,25 @@ object RenderPlan {
         return result
     }
 
-    /** 取 block 的预览文本（书签列表展示用）。 */
-    fun previewOfBlock(doc: DocumentModel, blockIndex: Int): String {
+    /**
+     * 取 block 的**结构性标签**（书签列表展示用）。
+     *
+     * **不返回正文**：书签标签会被持久化到 SharedPreferences，
+     * 若返回文档内容会导致正文落盘（隐私问题）。
+     * 这里只返回类型 + 序号，足以区分条目。
+     */
+    fun labelOfBlock(doc: DocumentModel, blockIndex: Int): String {
         val blocks = doc.allBlocks
         if (blockIndex < 0 || blockIndex >= blocks.size) return ""
-        val raw = when (val b = blocks[blockIndex]) {
-            is Block.Heading -> b.text
-            is Block.Paragraph -> b.text
-            is Block.CodeBlock -> b.code
-            is Block.BulletList -> b.items.joinToString(" / ")
-            is Block.TableBlock -> b.rows.firstOrNull()?.joinToString(" | ") ?: ""
-            is Block.ImageBlock -> b.alt ?: b.uri
-            is Block.Slide -> b.title ?: b.body.firstOrNull() ?: ""
+        val type = when (blocks[blockIndex]) {
+            is Block.Heading -> "标题"
+            is Block.Paragraph -> "段落"
+            is Block.CodeBlock -> "代码"
+            is Block.BulletList -> "列表"
+            is Block.TableBlock -> "表格"
+            is Block.ImageBlock -> "图片"
+            is Block.Slide -> "幻灯片"
         }
-        return raw.lineSequence().firstOrNull { it.isNotBlank() }?.trim()?.take(120) ?: ""
+        return "$type #${blockIndex + 1}"
     }
 }

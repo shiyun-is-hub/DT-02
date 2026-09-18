@@ -25,6 +25,14 @@ object EncodingDetector {
 
     private val GBK: Charset? = runCatching { Charset.forName("GBK") }.getOrNull()
 
+    /**
+     * GB18030（GBK 的超集，覆盖更多生僻字）。
+     *
+     * Android 从 API 26 起内置支持；取不到时回退 null，
+     * 解码流程会自动退到 [GBK]。
+     */
+    private val GB18030: Charset? = runCatching { Charset.forName("GB18030") }.getOrNull()
+
     fun detectAndDecode(bytes: ByteArray): Result {
         // 1) BOM 判定（确定性信号，优先）
         if (bytes.size >= 3 && bytes[0] == 0xEF.toByte() &&
@@ -53,12 +61,18 @@ object EncodingDetector {
             return Result(StandardCharsets.UTF_8, String(bytes, StandardCharsets.UTF_8))
         }
 
-        // 3) 回退 GBK（中文旧文件常见）
+        // 3) 回退 GB18030（GBK 的超集，优先于 GBK：两者对常见中文结果一致，
+        //    但 GB18030 能正确解出 GBK 之外的生僻字）
+        if (GB18030 != null) {
+            return Result(GB18030, String(bytes, GB18030))
+        }
+
+        // 4) 回退 GBK（中文旧文件常见）
         if (GBK != null) {
             return Result(GBK, String(bytes, GBK))
         }
 
-        // 4) 最终兜底：UTF-8（替换非法字节）
+        // 5) 最终兜底：UTF-8（替换非法字节）
         return Result(StandardCharsets.UTF_8, String(bytes, StandardCharsets.UTF_8))
     }
 
@@ -69,8 +83,46 @@ object EncodingDetector {
      */
     fun readAllText(input: InputStream, limitBytes: Long = DEFAULT_LIMIT_BYTES): Result {
         val (bytes, truncated) = input.readBytesLimited(limitBytes)
-        val decoded = detectAndDecode(bytes)
+        // 截断点可能落在多字节字符中间，导致 isValidUtf8 误判为「非 UTF-8」
+        // 进而回退 GBK，把整个 UTF-8 文件解码成乱码。
+        // 因此截断时先裁掉尾部不完整的多字节序列，再做编码判定。
+        val safe = if (truncated) trimIncompleteTail(bytes) else bytes
+        val decoded = detectAndDecode(safe)
         return if (truncated) decoded.copy(truncated = true) else decoded
+    }
+
+    /**
+     * 裁掉尾部不完整的多字节 UTF-8 序列（最多 3 字节）。
+     *
+     * 只在"末尾看起来像被截断的 UTF-8 序列"时才裁；
+     * 若尾部本身是非法字节（真正的 GBK 文件），不做处理，
+     * 交给正常流程判定。
+     */
+    private fun trimIncompleteTail(bytes: ByteArray): ByteArray {
+        var cut = 0
+        // 从末尾往前找，最多回退 3 个字节（UTF-8 最长 4 字节，首字节 + 最多 3 续字节）
+        for (back in 1..3) {
+            val i = bytes.size - back
+            if (i < 0) break
+            val b = bytes[i].toInt() and 0xFF
+            when {
+                b < 0x80 -> return bytes              // ASCII，未截断
+                b in 0x80..0xBF -> { /* 续字节，继续往前找首字节 */ }
+                b in 0xC0..0xFF -> {
+                    // 找到首字节：判断它声明的序列长度是否超出剩余字节
+                    val need = when {
+                        b in 0xC2..0xDF -> 2
+                        b in 0xE0..0xEF -> 3
+                        b in 0xF0..0xF4 -> 4
+                        else -> return bytes // 非法首字节，不是截断问题
+                    }
+                    if (need > back) cut = i // 序列不完整，从首字节处裁掉
+                    return if (cut > 0) bytes.copyOf(cut) else bytes
+                }
+                else -> return bytes
+            }
+        }
+        return if (cut > 0) bytes.copyOf(cut) else bytes
     }
 
     /**

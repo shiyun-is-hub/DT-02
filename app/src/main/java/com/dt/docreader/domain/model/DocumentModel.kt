@@ -8,7 +8,14 @@ data class DocumentMeta(
     val encoding: String? = null,
     val pageCount: Int = 0,
     /** 语言显示名（代码/结构化文本用），如 "Kotlin"。 */
-    val language: String? = null
+    val language: String? = null,
+    /**
+     * 内容是否因超出解析上限而被截断。
+     *
+     * 例：文件 50MB 但 [com.dt.docreader.infra.EncodingDetector.DEFAULT_LIMIT_BYTES] 为 32MB，
+     * 此时只解析前 32MB，UI 必须**明确告知用户**，而不是静默显示部分内容。
+     */
+    val truncated: Boolean = false
 )
 
 /** 章节 / 页 / 幻灯片。 */

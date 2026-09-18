@@ -69,6 +69,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.dt.docreader.ui.theme.TermBg
 import com.dt.docreader.ui.theme.TermCodeText
+import com.dt.docreader.ui.theme.TermError
 import com.dt.docreader.ui.theme.TermGreen
 import com.dt.docreader.ui.theme.TermGreenBright
 import com.dt.docreader.ui.theme.TermGreenDeep
@@ -105,14 +106,18 @@ fun ReaderScreen(
     var searching by remember { mutableStateOf(false) }
 
     // ---- 书签 ----
-    val docPath = (state as? UiState.Success)?.doc?.meta?.let { viewModel.currentPath } ?: ""
+    // 注意：直接用 viewModel.currentPath（加载时即写入），
+    // 不要依赖 state 是否为 Success —— 否则文档切换进入 Loading 期间
+    // docPath 会变成空串，导致书签列表被清空、面板闪烁。
+    val docPath = viewModel.currentPath
+
     var bookmarks by remember { mutableStateOf<List<BookmarkStore.Bookmark>>(emptyList()) }
 
     val listState = rememberLazyListState()
 
     // 文档变化时加载书签
     LaunchedEffect(docPath) {
-        if (docPath.isNotEmpty()) bookmarks = BookmarkStore.list(context, docPath)
+        bookmarks = if (docPath.isNotEmpty()) BookmarkStore.list(context, docPath) else emptyList()
     }
 
     // 搜索：输入防抖后执行
@@ -125,8 +130,14 @@ fun ReaderScreen(
         }
         searching = true
         delay(180) // 防抖：避免每个字符都全量扫描
-        searchResults = withContext(Dispatchers.Default) {
-            SearchDocumentUseCase.search(doc, searchQuery)
+        // 捕获当前文档，避免搜索期间切换文档后把旧结果写入新文档
+        val target = doc
+        val results = withContext(Dispatchers.Default) {
+            SearchDocumentUseCase.search(target, searchQuery)
+        }
+        // 结果写回前再次确认文档未变（stale 结果丢弃）
+        if ((state as? UiState.Success)?.doc === target) {
+            searchResults = results
         }
         searching = false
     }
@@ -177,9 +188,10 @@ fun ReaderScreen(
                     val d = doc
                     if (d != null && docPath.isNotEmpty()) {
                         val bi = RenderPlan.blockIndexOfItem(d, listState.firstVisibleItemIndex - 1)
-                        val preview = bi?.let { RenderPlan.previewOfBlock(d, it) } ?: ""
                         if (bi != null) {
-                            bookmarks = BookmarkStore.add(context, docPath, bi, preview)
+                            // 只存结构性标签（类型 + 序号），不存正文
+                            val label = RenderPlan.labelOfBlock(d, bi)
+                            bookmarks = BookmarkStore.add(context, docPath, bi, label)
                             Toast.makeText(context, "已添加书签", Toast.LENGTH_SHORT).show()
                         }
                     }
@@ -235,31 +247,57 @@ fun ReaderScreen(
                                 modifier = Modifier.size(20.dp)
                             )
                         }
+                    },
+                    actions = {
+                        // 侧边栏唤出入口（不做滑动手势：会破坏 LazyColumn 滚动）
+                        IconButton(onClick = { sidebarOpen = true }) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_menu),
+                                contentDescription = "打开侧边栏",
+                                tint = TermGreenBright,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
-                    // 侧边栏入口：阅读页右侧的竖线把手（见 ReaderScaffoldWithSidebar）
                 )
             }
         ) { padding ->
-            Box(
+            Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(padding)
             ) {
-                when (val s = state) {
-                    is UiState.Idle -> CenterText("> 请返回选择文件")
-                    is UiState.Loading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator(color = TermGreenBright)
-                            Spacer(Modifier.height(12.dp))
-                            Text("> 解析中…", color = TermGreen, fontFamily = FontFamily.Monospace)
-                        }
-                    }
-                    is UiState.Error -> CenterText("> 错误: ${s.message}")
-                    is UiState.Success -> DocumentContent(
-                        doc = s.doc,
-                        settings = settings,
-                        listState = listState
+                // 截断提示：文件超出解析上限时明确告知，避免用户以为内容完整
+                val doc = (state as? UiState.Success)?.doc
+                if (doc?.meta?.truncated == true) {
+                    Text(
+                        text = "! 文件超过解析上限（${formatSize(com.dt.docreader.infra.EncodingDetector.DEFAULT_LIMIT_BYTES)}），仅显示前部分内容",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        color = TermError,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(TermGreenDeep)
+                            .padding(horizontal = 12.dp, vertical = 7.dp)
                     )
+                }
+                Box(modifier = Modifier.fillMaxSize()) {
+                    when (val s = state) {
+                        is UiState.Idle -> CenterText("> 请返回选择文件")
+                        is UiState.Loading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(color = TermGreenBright)
+                                Spacer(Modifier.height(12.dp))
+                                Text("> 解析中…", color = TermGreen, fontFamily = FontFamily.Monospace)
+                            }
+                        }
+                        is UiState.Error -> CenterText("> 错误: ${s.message}")
+                        is UiState.Success -> DocumentContent(
+                            doc = s.doc,
+                            settings = settings,
+                            listState = listState
+                        )
+                    }
                 }
             }
         }

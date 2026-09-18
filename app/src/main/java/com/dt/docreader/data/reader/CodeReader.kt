@@ -55,7 +55,8 @@ class CodeReader : DocumentReader {
                 fileSize = source.size,
                 kind = FileKind.CODE,
                 encoding = decoded.charset.name(),
-                language = lang.displayName
+                language = lang.displayName,
+                truncated = decoded.truncated
             ),
             sections = listOf(Section(title = null, pageIndex = 0, blocks = blocks)),
             rawText = text

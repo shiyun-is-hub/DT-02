@@ -51,7 +51,8 @@ class TxtReader : DocumentReader {
                 fileSize = source.size,
                 kind = FileKind.TXT,
                 encoding = result.charset.name(),
-                language = "纯文本"
+                language = "纯文本",
+                truncated = result.truncated
             ),
             sections = listOf(Section(title = null, pageIndex = 0, blocks = blocks)),
             rawText = text

@@ -33,6 +33,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -132,7 +133,8 @@ fun EditorScreen(
         mutableStateMapOf<Int, Unit>()
     }
     // 当前聚焦的块索引（符号栏插入定位用）
-    var focusedChunk by remember(initialText) { mutableStateOf(0) }
+    // 用 mutableIntStateOf 避免 Int 装箱（AutoboxingStateCreation）
+    var focusedChunk by remember(initialText) { mutableIntStateOf(0) }
 
     // ---- 单框模式状态 ----
     var field by remember(initialText) {

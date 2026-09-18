@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -94,12 +95,14 @@ private fun AppRoot() {
     val editScope = rememberCoroutineScope()
 
     // ---- 文件管理器状态 ----
-    val storageRoot = remember { File("/storage/emulated/0") }
+    // 用 Environment API 而非硬编码路径（多用户/特殊 ROM 下路径可能不同）
+    val storageRoot = remember { FileBrowser.storageRoots().firstOrNull() ?: File("/") }
     var currentDir by remember { mutableStateOf(storageRoot) }
 
     // ---- 权限状态（进入页面 / 从设置返回时刷新） ----
     var hasPermission by remember { mutableStateOf(StoragePermission.hasAllFilesAccess(context)) }
-    var permissionTick by remember { mutableStateOf(0) }
+    // 用 mutableIntStateOf 避免 Int 装箱（AutoboxingStateCreation）
+    var permissionTick by remember { mutableIntStateOf(0) }
 
     // ---- 最近记录 ----
     var recents by remember { mutableStateOf(RecentStore.listExisting(context)) }

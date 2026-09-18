@@ -11,8 +11,8 @@ import org.json.JSONObject
  * - RenderPlan 产出的 item 索引会随**字号变化**、**是否拆分超长段落**而改变，
  *   用它做锚点，用户调一次字号书签就全错位了。
  * - `blockIndex` 指向 DocumentModel 中 block 的稳定序号，与渲染细节无关。
- * - 额外记录 [preview] 文本，用于在书签列表里显示上下文，
- *   即使文档被外部修改也能让用户辨认。
+ * - 额外记录 [Bookmark.label]（结构性标签，如"段落 #12"），
+ *   **不含正文**，用于在书签列表里区分条目。
  *
  * 同时提供"阅读位置"（每文档一条，用于自动恢复上次位置）。
  */
@@ -20,9 +20,19 @@ object BookmarkStore {
 
     private const val PREF = "docreader_bookmarks"
 
+    /**
+     * 书签。
+     *
+     * **隐私约束**：不持久化文档正文。
+     * 早期版本用 `preview.take(120)` 把正文片段写入 SharedPreferences，
+     * 这会让文档内容落到磁盘上（违反"不持久化文档内容"原则）。
+     * 现在只保存**结构性提示**（block 类型 + 序号），
+     * 足以在书签列表中区分条目，且不泄露内容。
+     */
     data class Bookmark(
         val blockIndex: Int,
-        val preview: String,
+        /** 结构性标签，如 "段落 #12"、"代码 #3"。不含正文。 */
+        val label: String,
         val createdAt: Long
     )
 
@@ -37,11 +47,12 @@ object BookmarkStore {
             val arr = JSONArray(raw)
             buildList(arr.length()) {
                 for (i in 0 until arr.length()) {
-                    val o = arr.getJSONObject(i)
+                    // 用 optJSONObject：单项损坏时跳过该项，而不是让整个列表变空
+                    val o = arr.optJSONObject(i) ?: continue
                     add(
                         Bookmark(
                             blockIndex = o.optInt("b", -1),
-                            preview = o.optString("p", ""),
+                            label = o.optString("l", ""),
                             createdAt = o.optLong("t", 0L)
                         )
                     )
@@ -51,10 +62,10 @@ object BookmarkStore {
     }
 
     /** 添加书签；同一 blockIndex 已存在则不重复添加。 */
-    fun add(context: Context, docPath: String, blockIndex: Int, preview: String): List<Bookmark> {
+    fun add(context: Context, docPath: String, blockIndex: Int, label: String): List<Bookmark> {
         val current = list(context, docPath)
         if (current.any { it.blockIndex == blockIndex }) return current
-        val updated = (current + Bookmark(blockIndex, preview.take(120), System.currentTimeMillis()))
+        val updated = (current + Bookmark(blockIndex, label.take(40), System.currentTimeMillis()))
             .sortedBy { it.blockIndex }
             .take(MAX_PER_DOC)
         persist(context, docPath, updated)
@@ -78,7 +89,7 @@ object BookmarkStore {
             arr.put(
                 JSONObject().apply {
                     put("b", b.blockIndex)
-                    put("p", b.preview)
+                    put("l", b.label)
                     put("t", b.createdAt)
                 }
             )
@@ -101,7 +112,30 @@ object BookmarkStore {
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
 
-    /** 路径含 `/` 等字符，用 hashCode 做 key，避免 SharedPreferences key 过长/非法。 */
-    private fun keyBookmarks(docPath: String) = "bm_${docPath.hashCode()}"
-    private fun keyPosition(docPath: String) = "pos_${docPath.hashCode()}"
+    /**
+     * 路径 -> SharedPreferences key。
+     *
+     * **不能用 `hashCode()`**：`String.hashCode()` 只有 32 位，
+     * 不同路径完全可能碰撞（如 `/a/b.txt` 与 `/c/d.txt`），
+     * 一旦碰撞，两个文件的书签/阅读位置会**互相覆盖**。
+     *
+     * 这里改用 **SHA-256 前 16 字节的十六进制**：
+     * - 碰撞概率可忽略（128 位）；
+     * - 定长 32 字符，不含 `/` 等非法字符，安全用作 key。
+     */
+    private fun docKey(docPath: String): String {
+        val md = java.security.MessageDigest.getInstance("SHA-256")
+        val digest = md.digest(docPath.toByteArray(Charsets.UTF_8))
+        val sb = StringBuilder(32)
+        for (i in 0 until 16) {
+            val v = digest[i].toInt() and 0xFF
+            sb.append(HEX[v ushr 4]).append(HEX[v and 0x0F])
+        }
+        return sb.toString()
+    }
+
+    private fun keyBookmarks(docPath: String) = "bm_${docKey(docPath)}"
+    private fun keyPosition(docPath: String) = "pos_${docKey(docPath)}"
+
+    private val HEX = "0123456789abcdef".toCharArray()
 }

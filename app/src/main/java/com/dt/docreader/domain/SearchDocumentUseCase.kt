@@ -53,17 +53,32 @@ object SearchDocumentUseCase {
         if (query.isEmpty()) return emptyList()
         val raw = doc.rawText ?: return emptyList()
 
-        val haystack = if (caseSensitive) raw else raw.lowercase()
         val needle = if (caseSensitive) query else query.lowercase()
         if (needle.isEmpty()) return emptyList()
 
-        // 预扫描：每个 block 的代表文本，用于命中定位
-        val blockTexts = doc.allBlocks.map { representativeText(it).lowercase() }
+        // 预扫描：每个 block 的代表文本，用于命中定位。
+        // 只在需要时（非区分大小写）做 lowercase，且**逐块**进行，
+        // 避免对整个 32MB 原文再复制一份小写副本（内存峰值翻倍）。
+        val blockTexts: List<String> = doc.allBlocks.map {
+            val t = representativeText(it)
+            if (caseSensitive) t else t.lowercase()
+        }
+
+        // 定位索引：把 block 文本按首字符分桶，避免每个命中都全量扫描所有 block。
+        val bucket = HashMap<Char, MutableList<Int>>()
+        blockTexts.forEachIndexed { i, t ->
+            if (t.isNotEmpty()) bucket.getOrPut(t[0]) { ArrayList(4) }.add(i)
+        }
 
         val hits = ArrayList<Hit>(minOf(limit, 64))
         var from = 0
         while (hits.size < limit) {
-            val idx = haystack.indexOf(needle, from)
+            // 不区分大小写时，用一次性构造的搜索视图，避免每轮都 lowercase
+            val idx = if (caseSensitive) {
+                raw.indexOf(needle, from)
+            } else {
+                raw.indexOf(needle, from, ignoreCase = true)
+            }
             if (idx < 0) break
 
             val lineStart = raw.lastIndexOf('\n', idx).let { if (it < 0) 0 else it + 1 }
@@ -73,14 +88,15 @@ object SearchDocumentUseCase {
             val matchInLine = idx - lineStart
             val (shown, shownMatchStart) = windowAround(fullLine, matchInLine, query.length)
 
-            val probe = raw.substring(idx, minOf(idx + PROBE_LEN, raw.length)).lowercase()
+            val probe = raw.substring(idx, minOf(idx + PROBE_LEN, raw.length))
+                .let { if (caseSensitive) it else it.lowercase() }
             hits.add(
                 Hit(
                     offset = idx,
                     lineText = shown,
                     matchStartInLine = shownMatchStart,
                     matchLength = query.length,
-                    blockIndex = locateBlock(blockTexts, probe)
+                    blockIndex = locateBlock(bucket, blockTexts, probe)
                 )
             )
             from = idx + needle.length
@@ -109,11 +125,20 @@ object SearchDocumentUseCase {
     /**
      * 把命中的片段映射到 block 序号（近似定位）。
      *
+     * 用首字符分桶加速：只在"首字符与 probe 首字符相同"的 block 里查找，
+     * 把 O(命中数 × block数) 降为 O(命中数 × 桶内数)。
+     *
      * 定位失败返回 -1，UI 会退化为「仅显示结果，不跳转」。
      */
-    private fun locateBlock(blockTextsLower: List<String>, probeLower: String): Int {
+    private fun locateBlock(
+        bucket: Map<Char, List<Int>>,
+        blockTextsLower: List<String>,
+        probeLower: String
+    ): Int {
         if (probeLower.isBlank()) return -1
-        blockTextsLower.forEachIndexed { i, t ->
+        val candidates = bucket[probeLower[0]] ?: return -1
+        for (i in candidates) {
+            val t = blockTextsLower[i]
             if (t.isNotEmpty() && t.contains(probeLower)) return i
         }
         return -1
