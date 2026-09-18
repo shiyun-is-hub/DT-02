@@ -18,7 +18,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -30,8 +32,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -41,14 +48,25 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dt.docreader.R
+import com.dt.docreader.data.BookmarkStore
+import com.dt.docreader.data.ReaderSettings
+import com.dt.docreader.domain.SearchDocumentUseCase
 import com.dt.docreader.domain.model.Block
 import com.dt.docreader.domain.model.DocumentModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.dt.docreader.ui.theme.TermBg
 import com.dt.docreader.ui.theme.TermCodeText
 import com.dt.docreader.ui.theme.TermGreen
@@ -59,61 +77,190 @@ import com.dt.docreader.ui.theme.TermLineNumber
 import com.dt.docreader.ui.theme.TermOnBgVariant
 import com.dt.docreader.ui.theme.TermSurface
 
-/** 代码字号 */
-private val CODE_FONT_SIZE = 12.5.sp
+/** 单行代码最多显示的行数（超长行软换行后的上限）。 */
+private const val CODE_MAX_LINES = 3
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, FlowPreview::class)
 @Composable
-fun ReaderScreen(viewModel: DocumentViewModel, onBack: () -> Unit, modifier: Modifier = Modifier) {
+fun ReaderScreen(
+    viewModel: DocumentViewModel,
+    onBack: () -> Unit,
+    onEdit: (String, String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val state by viewModel.state.collectAsStateWithLifecycle()
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        containerColor = TermBg,
-        topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = TermSurface,
-                    titleContentColor = TermGreenBright,
-                    navigationIconContentColor = TermGreenBright
-                ),
-                title = {
-                    val name = (state as? UiState.Success)?.doc?.meta?.fileName ?: "reader"
-                    Text(
-                        text = name,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        fontFamily = FontFamily.Monospace,
-                        style = MaterialTheme.typography.titleMedium
-                    )
+
+    // ---- 阅读设置（字号 / 行距） ----
+    var settings by remember { mutableStateOf(ReaderSettings.load(context)) }
+
+    // ---- 侧边栏 ----
+    var sidebarOpen by remember { mutableStateOf(false) }
+    var panel by remember { mutableStateOf(SidebarPanel.FONT) }
+
+    // ---- 搜索 ----
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<SearchDocumentUseCase.Hit>>(emptyList()) }
+    var searching by remember { mutableStateOf(false) }
+
+    // ---- 书签 ----
+    val docPath = (state as? UiState.Success)?.doc?.meta?.let { viewModel.currentPath } ?: ""
+    var bookmarks by remember { mutableStateOf<List<BookmarkStore.Bookmark>>(emptyList()) }
+
+    val listState = rememberLazyListState()
+
+    // 文档变化时加载书签
+    LaunchedEffect(docPath) {
+        if (docPath.isNotEmpty()) bookmarks = BookmarkStore.list(context, docPath)
+    }
+
+    // 搜索：输入防抖后执行
+    LaunchedEffect(searchQuery, state) {
+        val doc = (state as? UiState.Success)?.doc
+        if (doc == null || searchQuery.isEmpty()) {
+            searchResults = emptyList()
+            searching = false
+            return@LaunchedEffect
+        }
+        searching = true
+        delay(180) // 防抖：避免每个字符都全量扫描
+        searchResults = withContext(Dispatchers.Default) {
+            SearchDocumentUseCase.search(doc, searchQuery)
+        }
+        searching = false
+    }
+
+    // 阅读位置自动保存（滚动停止后）
+    LaunchedEffect(listState, docPath) {
+        if (docPath.isEmpty()) return@LaunchedEffect
+        snapshotFlow { listState.firstVisibleItemIndex }
+            .distinctUntilChanged()
+            .debounce(600)
+            .collect { idx ->
+                // 保存的是"可见项序号"，恢复时按 item 序号定位
+                BookmarkStore.savePosition(context, docPath, idx)
+            }
+    }
+
+    val doc = (state as? UiState.Success)?.doc
+
+    ReaderScaffoldWithSidebar(
+        open = sidebarOpen,
+        onOpenChange = { sidebarOpen = it },
+        sidebar = {
+            SidebarContent(
+                panel = panel,
+                onPanelChange = { panel = it },
+                settings = settings,
+                onSettingsChange = {
+                    settings = it
+                    ReaderSettings.save(context, it)
                 },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_arrow_left),
-                            contentDescription = "返回",
-                            modifier = Modifier.size(20.dp)
-                        )
+                onResetSettings = { settings = ReaderSettings.reset(context) },
+                searchQuery = searchQuery,
+                onSearchQueryChange = { searchQuery = it },
+                searchResults = searchResults,
+                onSearchResultClick = { hit ->
+                    // 跳转：把 blockIndex 映射为渲染 item 序号
+                    val target = doc?.let { RenderPlan.itemIndexOfBlock(it, hit.blockIndex) }
+                    if (target != null && target >= 0) {
+                        scope.launch { listState.animateScrollToItem(target + 1) } // +1 跳过 meta 头
+                        sidebarOpen = false
+                    } else {
+                        Toast.makeText(context, "无法定位该结果", Toast.LENGTH_SHORT).show()
                     }
-                }
+                },
+                searching = searching,
+                bookmarks = bookmarks,
+                onAddBookmark = {
+                    val d = doc
+                    if (d != null && docPath.isNotEmpty()) {
+                        val bi = RenderPlan.blockIndexOfItem(d, listState.firstVisibleItemIndex - 1)
+                        val preview = bi?.let { RenderPlan.previewOfBlock(d, it) } ?: ""
+                        if (bi != null) {
+                            bookmarks = BookmarkStore.add(context, docPath, bi, preview)
+                            Toast.makeText(context, "已添加书签", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onBookmarkClick = { b ->
+                    val target = doc?.let { RenderPlan.itemIndexOfBlock(it, b.blockIndex) }
+                    if (target != null && target >= 0) {
+                        scope.launch { listState.animateScrollToItem(target + 1) }
+                        sidebarOpen = false
+                    }
+                },
+                onBookmarkDelete = { b ->
+                    if (docPath.isNotEmpty()) {
+                        bookmarks = BookmarkStore.remove(context, docPath, b.blockIndex)
+                    }
+                },
+                editable = doc?.isEditable == true,
+                onEdit = {
+                    val d = doc
+                    if (d?.rawText != null && docPath.isNotEmpty()) {
+                        onEdit(docPath, d.rawText)
+                    }
+                },
+                onClose = { sidebarOpen = false }
             )
         }
-    ) { padding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
-            when (val s = state) {
-                is UiState.Idle -> CenterText("> 请返回选择文件")
-                is UiState.Loading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = TermGreenBright)
-                        Spacer(Modifier.height(12.dp))
-                        Text("> 解析中…", color = TermGreen, fontFamily = FontFamily.Monospace)
+    ) {
+        Scaffold(
+            modifier = modifier.fillMaxSize(),
+            containerColor = TermBg,
+            topBar = {
+                TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = TermSurface,
+                        titleContentColor = TermGreenBright,
+                        navigationIconContentColor = TermGreenBright
+                    ),
+                    title = {
+                        val name = doc?.meta?.fileName ?: "reader"
+                        Text(
+                            text = name,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            fontFamily = FontFamily.Monospace,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                painter = painterResource(R.drawable.ic_arrow_left),
+                                contentDescription = "返回",
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
+                    // 侧边栏入口：阅读页右侧的竖线把手（见 ReaderScaffoldWithSidebar）
+                )
+            }
+        ) { padding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+            ) {
+                when (val s = state) {
+                    is UiState.Idle -> CenterText("> 请返回选择文件")
+                    is UiState.Loading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = TermGreenBright)
+                            Spacer(Modifier.height(12.dp))
+                            Text("> 解析中…", color = TermGreen, fontFamily = FontFamily.Monospace)
+                        }
+                    }
+                    is UiState.Error -> CenterText("> 错误: ${s.message}")
+                    is UiState.Success -> DocumentContent(
+                        doc = s.doc,
+                        settings = settings,
+                        listState = listState
+                    )
                 }
-                is UiState.Error -> CenterText("> 错误: ${s.message}")
-                is UiState.Success -> DocumentContent(s.doc)
             }
         }
     }
@@ -141,10 +288,19 @@ private fun CenterText(text: String) {
  * - key 使用**预先分配的 Int id**，避免每帧拼接字符串。
  */
 @Composable
-private fun DocumentContent(doc: DocumentModel) {
+private fun DocumentContent(
+    doc: DocumentModel,
+    settings: ReaderSettings.Snapshot,
+    listState: LazyListState
+) {
+    // 字号变化会影响行高与换行，但**不影响 item 结构**（RenderPlan 只按内容拆分），
+    // 因此这里仍以 doc 为缓存键，避免调字号时重算整个渲染计划。
     val items = remember(doc) { RenderPlan.build(doc) }
 
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        state = listState
+    ) {
         item(key = "__meta__") {
             MetaHeader(doc, modifier = Modifier.padding(horizontal = 12.dp))
             HorizontalDivider(color = TermGreenDim, modifier = Modifier.padding(horizontal = 12.dp))
@@ -152,9 +308,10 @@ private fun DocumentContent(doc: DocumentModel) {
 
         items(
             items = items,
-            key = { it.id }        // Int key：零分配、零 hash 成本
+            key = { it.id },        // Int key：零分配、零 hash 成本
+            contentType = { it.contentType }  // 按类型复用节点，避免不同类型互相顶替
         ) { item ->
-            RenderItemView(item)
+            RenderItemView(item, settings)
         }
 
         item(key = "__tail__") { Spacer(Modifier.height(32.dp)) }
@@ -162,18 +319,20 @@ private fun DocumentContent(doc: DocumentModel) {
 }
 
 @Composable
-private fun RenderItemView(item: RenderItem) {
+private fun RenderItemView(item: RenderItem, settings: ReaderSettings.Snapshot) {
     when (item) {
         is RenderItem.CodeHeader -> CodeHeaderRow(item)
-        is RenderItem.CodeLine -> CodeLineRow(item)
-        is RenderItem.CodeFooter -> Spacer(Modifier.height(12.dp))
+        is RenderItem.CodeLine -> CodeLineRow(item, settings)
+        is RenderItem.CodeFooter -> CodeFooterView(item)
 
-        is RenderItem.TableRow -> TableRowView(item)
+        is RenderItem.TableRow -> TableRowView(item, settings)
         is RenderItem.TableFooter -> Spacer(Modifier.height(12.dp))
 
-        is RenderItem.ListItemRow -> ListItemView(item)
+        is RenderItem.ListItemRow -> ListItemView(item, settings)
 
-        is RenderItem.SimpleBlock -> SimpleBlockView(item.block)
+        is RenderItem.SimpleBlock -> SimpleBlockView(item.block, settings)
+
+        is RenderItem.ParagraphChunk -> ParagraphChunkView(item, settings)
     }
 }
 
@@ -250,17 +409,23 @@ private fun CodeHeaderRow(item: RenderItem.CodeHeader) {
  * - 把「行号 + 代码」合并进**一个 Text**（用 AnnotatedString 让行号着色），
  *   使每行只剩 1 个绘制/布局节点，而不是初版的 Row + 2×Text（3 个节点）。
  * - 行号用固定宽度占位（右对齐 + 单空格分隔），无需额外宽度修饰符。
- * - 关闭软换行改为「不换行 + 超宽可横向滚动」在本架构下不可行，
- *   因此保留 softWrap，但配合单节点结构，测量成本已大幅降低。
+ * - **maxLines = 3**：超长行（压缩 JS/JSON）最多只量 3 行高度，
+ *   避免单个 item 触发数十次换行计算。配合 RenderPlan 的字符截断双保险。
+ * - **includeFontPadding = false**：去掉字体内边距，垂直测量更精确、行高更稳定，
+ *   减少因行高抖动导致的重排。
  * - 字面量 style 全部预先构建（在 remember 中），避免每行重复构造 TextStyle。
  */
 @Composable
-private fun CodeLineRow(item: RenderItem.CodeLine) {
-    val style = remember {
+private fun CodeLineRow(item: RenderItem.CodeLine, settings: ReaderSettings.Snapshot) {
+    val style = remember(settings.codeFontSize, settings.lineHeightScale) {
+        val size = settings.codeFontSize
         TextStyle(
             fontFamily = FontFamily.Monospace,
-            fontSize = CODE_FONT_SIZE,
-            color = TermCodeText
+            fontSize = size.sp,
+            color = TermCodeText,
+            platformStyle = PlatformTextStyle(includeFontPadding = false),
+            // 行高随字号等比缩放，保证不同字号下视觉比例一致
+            lineHeight = (size * 1.36f).sp
         )
     }
     val lineNumberColor = TermLineNumber
@@ -279,6 +444,8 @@ private fun CodeLineRow(item: RenderItem.CodeLine) {
         text = annotated,
         style = style,
         softWrap = true,
+        maxLines = CODE_MAX_LINES,
+        overflow = TextOverflow.Ellipsis,
         modifier = Modifier
             .fillMaxWidth()
             .background(TermGreenDeep)
@@ -286,10 +453,29 @@ private fun CodeLineRow(item: RenderItem.CodeLine) {
     )
 }
 
+// ---------------- 代码块尾部（截断提示） ----------------
+
+@Composable
+private fun CodeFooterView(item: RenderItem.CodeFooter) {
+    if (item.truncated) {
+        Text(
+            text = "── 行数过多，仅显示前 ${RenderPlan.CODE_LINE_LIMIT} 行 ──",
+            style = MaterialTheme.typography.labelSmall,
+            color = TermGreenDim,
+            fontFamily = FontFamily.Monospace,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        )
+    } else {
+        Spacer(Modifier.height(12.dp))
+    }
+}
+
 // ---------------- 表格（逐行渲染） ----------------
 
 @Composable
-private fun TableRowView(item: RenderItem.TableRow) {
+private fun TableRowView(item: RenderItem.TableRow, settings: ReaderSettings.Snapshot) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -300,7 +486,9 @@ private fun TableRowView(item: RenderItem.TableRow) {
             Text(
                 text = cell,
                 fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
+                fontSize = (settings.bodyFontSize - 3f).coerceAtLeast(9f).sp,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
                 fontWeight = if (item.isHeader) FontWeight.Bold else FontWeight.Normal,
                 color = if (item.isHeader) TermGreenBright else TermCodeText,
                 modifier = Modifier
@@ -317,33 +505,66 @@ private fun TableRowView(item: RenderItem.TableRow) {
 // ---------------- 列表项 ----------------
 
 @Composable
-private fun ListItemView(item: RenderItem.ListItemRow) {
+private fun ListItemView(item: RenderItem.ListItemRow, settings: ReaderSettings.Snapshot) {
+    val size = settings.bodyFontSize.sp
+    val lineH = (settings.bodyFontSize * settings.lineHeightScale).sp
     Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
         Text(
             text = item.marker + " ",
-            style = MaterialTheme.typography.bodyLarge,
+            fontSize = size,
+            lineHeight = lineH,
             color = TermGreenBright,
             fontFamily = FontFamily.Monospace
         )
         Text(
             text = item.text,
-            style = MaterialTheme.typography.bodyLarge,
+            fontSize = size,
+            lineHeight = lineH,
             color = MaterialTheme.colorScheme.onBackground
         )
     }
 }
 
+// ---------------- 超长段落片段 ----------------
+
+/**
+ * 超长段落的一个片段。
+ *
+ * 与 [SimpleBlockView] 里的 Paragraph 分支保持**一致的视觉**：
+ * 同样的字号/颜色/左右内边距，只是把上下间距分配到首尾片段，
+ * 使拆分后的段落看起来仍是一个连续段落。
+ */
+@Composable
+private fun ParagraphChunkView(item: RenderItem.ParagraphChunk, settings: ReaderSettings.Snapshot) {
+    Text(
+        text = item.text,
+        fontSize = settings.bodyFontSize.sp,
+        lineHeight = (settings.bodyFontSize * settings.lineHeightScale).sp,
+        color = MaterialTheme.colorScheme.onBackground,
+        modifier = Modifier
+            .padding(horizontal = 12.dp)
+            .padding(
+                top = if (item.isFirst) 3.dp else 0.dp,
+                bottom = if (item.isLast) 3.dp else 0.dp
+            )
+    )
+}
+
 // ---------------- 其他块 ----------------
 
 @Composable
-private fun SimpleBlockView(block: Block) {
+private fun SimpleBlockView(block: Block, settings: ReaderSettings.Snapshot) {
     val pad = Modifier.padding(horizontal = 12.dp)
+    val bodySize = settings.bodyFontSize.sp
+    val bodyLine = (settings.bodyFontSize * settings.lineHeightScale).sp
+
     when (block) {
         is Block.Heading -> {
+            // 标题字号按正文比例缩放，保证不同字号下层级关系一致
             val size = when (block.level) {
-                1 -> 20.sp
-                2 -> 17.sp
-                else -> 15.sp
+                1 -> (settings.bodyFontSize + 4f).sp
+                2 -> (settings.bodyFontSize + 1.5f).sp
+                else -> settings.bodyFontSize.sp
             }
             Text(
                 text = "#".repeat(block.level.coerceAtMost(3)) + " " + block.text,
@@ -357,7 +578,8 @@ private fun SimpleBlockView(block: Block) {
 
         is Block.Paragraph -> Text(
             block.text,
-            style = MaterialTheme.typography.bodyLarge,
+            fontSize = bodySize,
+            lineHeight = bodyLine,
             color = MaterialTheme.colorScheme.onBackground,
             modifier = pad.padding(vertical = 3.dp)
         )
@@ -371,10 +593,19 @@ private fun SimpleBlockView(block: Block) {
 
         is Block.Slide -> Column(modifier = pad) {
             block.title?.let {
-                Text(it, style = MaterialTheme.typography.titleLarge, color = TermGreenBright)
+                Text(
+                    it,
+                    fontSize = (settings.bodyFontSize + 4f).sp,
+                    color = TermGreenBright
+                )
             }
             block.body.forEach {
-                Text(it, color = MaterialTheme.colorScheme.onBackground)
+                Text(
+                    it,
+                    fontSize = bodySize,
+                    lineHeight = bodyLine,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
             }
         }
 
@@ -385,7 +616,7 @@ private fun SimpleBlockView(block: Block) {
 
 private fun copyToClipboard(context: Context, text: String) {
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    cm.setPrimaryClip(ClipData.newPlainText("DocReader", text))
+    cm.setPrimaryClip(ClipData.newPlainText("谛听文档", text))
 }
 
 private fun formatSize(bytes: Long): String = when {

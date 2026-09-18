@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -12,9 +14,34 @@ android {
         applicationId = "com.dt.docreader"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 6
+        versionName = "0.6.0"
         multiDexEnabled = true
+    }
+
+    /**
+     * 正式签名。
+     *
+     * 密钥库位置与口令从 `keystore.properties` 读取（该文件**不入库**，
+     * 见 .gitignore），避免把密钥/口令提交到公开仓库。
+     * 若该文件不存在（如 CI 或他人克隆），则回退到 debug 签名，保证仍可构建。
+     */
+    val keystoreProps = Properties()
+    run {
+        val f = rootProject.file("keystore.properties")
+        if (f.exists()) f.inputStream().use { keystoreProps.load(it) }
+    }
+    val hasReleaseKey = keystoreProps.getProperty("storeFile") != null
+
+    signingConfigs {
+        if (hasReleaseKey) {
+            create("release") {
+                storeFile = file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
@@ -25,6 +52,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (hasReleaseKey) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         debug {
             // Debug 也开启代码压缩与资源裁剪 —— 体积优化关键。
@@ -37,6 +67,10 @@ android {
             )
             // debug 包保留可调试性（不破坏调试体验）
             isDebuggable = true
+            // 正式签名：使 debug 包也能覆盖安装已签名的正式包
+            if (hasReleaseKey) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -63,6 +97,8 @@ android {
 
     buildFeatures {
         compose = true
+        // 设置页需要读 BuildConfig.VERSION_NAME 动态显示版本号
+        buildConfig = true
     }
 
     packaging {

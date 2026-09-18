@@ -8,10 +8,12 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.Scaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -19,14 +21,18 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.dt.docreader.data.DocumentWriter
 import com.dt.docreader.data.FileBrowser
 import com.dt.docreader.data.RecentStore
 import com.dt.docreader.infra.StoragePermission
 import com.dt.docreader.ui.browser.FileBrowserScreen
+import com.dt.docreader.ui.editor.EditorScreen
+import kotlinx.coroutines.launch
 import com.dt.docreader.ui.nav.BottomNavBar
 import com.dt.docreader.ui.nav.BottomTab
 import com.dt.docreader.ui.reader.DocumentViewModel
@@ -45,12 +51,32 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
         )
         super.onCreate(savedInstanceState)
-        setContent { DocReaderTheme { AppRoot() } }
+        setContent {
+            DocReaderTheme {
+                // 全局避开状态栏：内容渲染在状态栏下方，而不是被状态栏压住。
+                // 放在最外层，使主界面 / 阅读页 / 编辑器三者行为一致。
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(TermBg)
+                        .statusBarsPadding()
+                ) {
+                    AppRoot()
+                }
+            }
+        }
     }
 }
 
 /** 打开中的文档状态（null = 未打开）。 */
 private data class OpenDoc(val path: String)
+
+/** 编辑中的文档状态。 */
+private data class EditDoc(
+    val path: String,
+    val initialText: String,
+    val fileName: String
+)
 
 @Composable
 private fun AppRoot() {
@@ -59,6 +85,13 @@ private fun AppRoot() {
     // ---- 导航状态 ----
     var tab by remember { mutableStateOf(BottomTab.RECENT) }
     var openDoc by remember { mutableStateOf<OpenDoc?>(null) }
+    var editDoc by remember { mutableStateOf<EditDoc?>(null) }
+
+    // ---- 编辑器状态 ----
+    var editDirty by remember { mutableStateOf(false) }
+    var editSaving by remember { mutableStateOf(false) }
+    var editMessage by remember { mutableStateOf<String?>(null) }
+    val editScope = rememberCoroutineScope()
 
     // ---- 文件管理器状态 ----
     val storageRoot = remember { File("/storage/emulated/0") }
@@ -92,13 +125,81 @@ private fun AppRoot() {
         permissionTick++
     }
 
+    // ---- 编辑器：全屏覆盖（优先级高于阅读器） ----
+    val editing = editDoc
+    if (editing != null) {
+        BackHandler {
+            if (editDirty) {
+                editMessage = "! 有未保存的修改，请先保存或再次退出"
+                // 二次返回才真正退出
+                editDirty = false
+            } else {
+                editDoc = null
+                editMessage = null
+            }
+        }
+        EditorScreen(
+            fileName = editing.fileName,
+            initialText = editing.initialText,
+            dirty = editDirty,
+            saving = editSaving,
+            message = editMessage,
+            onDirtyChange = { editDirty = it },
+            onSave = { getContent ->
+                if (editSaving) return@EditorScreen
+                editSaving = true
+                editMessage = null
+                editScope.launch {
+                    // 保存瞬间才拼接全文（大文件编辑过程中零全文拷贝）
+                    val content = getContent()
+                    val result = DocumentWriter.write(
+                        path = editing.path,
+                        content = content,
+                        charsetName = null,
+                        makeBackup = true
+                    )
+                    editSaving = false
+                    when (result) {
+                        is DocumentWriter.Result.Ok -> {
+                            editMessage = "✓ 已保存（备份：${result.backupPath?.substringAfterLast('/') ?: "无"}）"
+                            editDirty = false
+                            // 同步更新编辑态初值，避免再次编辑时误判 dirty
+                            editDoc = editing.copy(initialText = content)
+                        }
+                        is DocumentWriter.Result.Fail -> {
+                            editMessage = "! 保存失败：${result.message}"
+                        }
+                    }
+                }
+            },
+            onExit = {
+                if (editDirty) {
+                    editMessage = "! 有未保存的修改，请先保存或再次退出"
+                    editDirty = false
+                } else {
+                    editDoc = null
+                    editMessage = null
+                }
+            }
+        )
+        return
+    }
+
     // ---- 阅读器：全屏覆盖（无底栏） ----
     val doc = openDoc
     if (doc != null) {
         val vm: DocumentViewModel = viewModel()
         LaunchedEffect(doc.path) { vm.loadFile(doc.path) }
         BackHandler { openDoc = null }
-        ReaderScreen(viewModel = vm, onBack = { openDoc = null })
+        ReaderScreen(
+            viewModel = vm,
+            onBack = { openDoc = null },
+            onEdit = { path, text ->
+                editDirty = false
+                editMessage = null
+                editDoc = EditDoc(path, text, File(path).name)
+            }
+        )
         return
     }
 

@@ -165,9 +165,9 @@ fun SettingsScreen(
             // ---- 关于 ----
             SectionTitle("关于")
             InfoCard(
-                title = "DocReader",
+                title = "谛听文档",
                 lines = listOf(
-                    "版本：v0.3.0",
+                    "版本：v${com.dt.docreader.BuildConfig.VERSION_NAME}",
                     "架构：统一中间表示(IR) + 格式分发",
                     "UI：Jetpack Compose · 终端暗绿主题",
                     "图标：Tabler Icons (MIT)",

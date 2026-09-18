@@ -42,7 +42,8 @@ class MarkdownReader : DocumentReader {
                 encoding = decoded.charset.name(),
                 language = "Markdown"
             ),
-            sections = listOf(Section(title = null, pageIndex = 0, blocks = blocks))
+            sections = listOf(Section(title = null, pageIndex = 0, blocks = blocks)),
+            rawText = decoded.text
         )
     }
 

@@ -32,8 +32,23 @@ sealed interface Block {
 /** 解析后的文档模型（UI 只依赖它，与来源格式无关）。 */
 data class DocumentModel(
     val meta: DocumentMeta,
-    val sections: List<Section> = emptyList()
+    val sections: List<Section> = emptyList(),
+    /**
+     * 原始文本（仅文本家族填充；docx/pptx 等容器格式为 null）。
+     *
+     * 为什么需要它：
+     * - **编辑功能**必须基于原文，而 blocks 是解析后的结构，无法无损还原原文
+     *   （例如 Markdown 的内联标记在解析时已被剥离）。
+     * - 搜索功能若基于 blocks，会漏掉被剥离的标记文本，基于原文更准确。
+     *
+     * 内存代价：文本家族的文件上限为 32MB，原文与解析结果同时存在，
+     * 峰值内存约为文件大小的 2~3 倍，在移动设备可接受。
+     */
+    val rawText: String? = null
 ) {
     /** 便捷：拍平所有 block。 */
     val allBlocks: List<Block> get() = sections.flatMap { it.blocks }
+
+    /** 是否可编辑（仅文本家族且保留了原文）。 */
+    val isEditable: Boolean get() = rawText != null
 }

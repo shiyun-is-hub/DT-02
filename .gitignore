@@ -10,3 +10,8 @@
 local.properties
 app/build/
 *.log
+
+# 签名密钥与口令：绝不入库
+keystore.properties
+*.jks
+*.keystore

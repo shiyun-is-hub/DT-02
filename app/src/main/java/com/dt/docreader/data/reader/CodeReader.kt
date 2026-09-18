@@ -57,7 +57,8 @@ class CodeReader : DocumentReader {
                 encoding = decoded.charset.name(),
                 language = lang.displayName
             ),
-            sections = listOf(Section(title = null, pageIndex = 0, blocks = blocks))
+            sections = listOf(Section(title = null, pageIndex = 0, blocks = blocks)),
+            rawText = text
         )
     }
 
