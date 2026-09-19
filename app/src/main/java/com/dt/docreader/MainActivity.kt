@@ -1,6 +1,8 @@
 package com.dt.docreader
 
+import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -45,6 +47,16 @@ import com.dt.docreader.ui.theme.TermBg
 import java.io.File
 
 class MainActivity : ComponentActivity() {
+
+    /**
+     * 外部传入的待打开 URI（`ACTION_VIEW` / `ACTION_SEND`）。
+     *
+     * 用可变状态而非直接读 `intent`：因为 Activity 可能已存在并被复用
+     * （`launchMode` 默认 standard 时不会，但用户从最近任务切回、
+     * 或系统复用实例时 `onNewIntent` 会触发），需要让 Compose 感知变化。
+     */
+    private var pendingUri = mutableStateOf<Uri?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // 锁定暗色系统栏（终端风）
         enableEdgeToEdge(
@@ -52,6 +64,7 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT)
         )
         super.onCreate(savedInstanceState)
+        pendingUri.value = extractUri(intent)
         setContent {
             DocReaderTheme {
                 // 全局避开状态栏：内容渲染在状态栏下方，而不是被状态栏压住。
@@ -62,15 +75,39 @@ class MainActivity : ComponentActivity() {
                         .background(TermBg)
                         .statusBarsPadding()
                 ) {
-                    AppRoot()
+                    AppRoot(externalUri = pendingUri.value, onExternalUriConsumed = {
+                        pendingUri.value = null
+                    })
                 }
             }
         }
     }
+
+    /**
+     * 应用已在前台时被再次调起（如从文件管理器再次点文件）。
+     * 不处理会导致「点了没反应」。
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        extractUri(intent)?.let { pendingUri.value = it }
+    }
+
+    /** 从 Intent 中提取文档 URI；不是文档打开请求则返回 null。 */
+    private fun extractUri(intent: Intent?): Uri? = when (intent?.action) {
+        Intent.ACTION_VIEW -> intent.data
+        Intent.ACTION_SEND -> intent.getParcelableExtra(Intent.EXTRA_STREAM)
+        else -> null
+    }
 }
 
 /** 打开中的文档状态（null = 未打开）。 */
-private data class OpenDoc(val path: String)
+private data class OpenDoc(
+    /** 文件系统路径；URI 打开时为 null。 */
+    val path: String?,
+    /** 外部传入的 URI；路径打开时为 null。 */
+    val uri: Uri? = null
+)
 
 /** 编辑中的文档状态。 */
 private data class EditDoc(
@@ -80,13 +117,26 @@ private data class EditDoc(
 )
 
 @Composable
-private fun AppRoot() {
+private fun AppRoot(
+    externalUri: Uri?,
+    onExternalUriConsumed: () -> Unit
+) {
     val context = LocalContext.current
 
     // ---- 导航状态 ----
     var tab by remember { mutableStateOf(BottomTab.RECENT) }
     var openDoc by remember { mutableStateOf<OpenDoc?>(null) }
     var editDoc by remember { mutableStateOf<EditDoc?>(null) }
+
+    // ---- 外部调起：文件管理器 / 分享 / 浏览器点文档 ----
+    // 注意：**不写入「最近记录」**。RecentStore 存的是文件系统路径，
+    // 而 content:// URI 不是稳定路径（provider 可能失效、权限可能被回收），
+    // 记进去只会在下次点击时打开失败。
+    LaunchedEffect(externalUri) {
+        val uri = externalUri ?: return@LaunchedEffect
+        openDoc = OpenDoc(path = null, uri = uri)
+        onExternalUriConsumed()
+    }
 
     // ---- 编辑器状态 ----
     var editDirty by remember { mutableStateOf(false) }
@@ -192,11 +242,19 @@ private fun AppRoot() {
     val doc = openDoc
     if (doc != null) {
         val vm: DocumentViewModel = viewModel()
-        LaunchedEffect(doc.path) { vm.loadFile(doc.path) }
+        // 按来源分流：外部 URI 走 content:// 解析，本地路径走文件 + 缓存。
+        // key 用 uri/path 本身，切换文档时 LaunchedEffect 会重新加载。
+        val loadKey = doc.uri?.toString() ?: doc.path
+        LaunchedEffect(loadKey) {
+            if (doc.uri != null) vm.load(doc.uri) else doc.path?.let { vm.loadFile(it) }
+        }
         BackHandler { openDoc = null }
         ReaderScreen(
             viewModel = vm,
             onBack = { openDoc = null },
+            // URI 模式下禁用编辑：编辑器按文件系统路径写回，
+            // content:// 不是可写路径，进入后保存必然失败。
+            editable = doc.uri == null,
             onEdit = { path, text ->
                 editDirty = false
                 editMessage = null

@@ -87,6 +87,14 @@ fun ReaderScreen(
     viewModel: DocumentViewModel,
     onBack: () -> Unit,
     onEdit: (String, String) -> Unit,
+    /**
+     * 是否允许进入编辑器。
+     *
+     * URI 模式（外部 `content://` 传入）下为 false：
+     * 编辑器按**文件系统路径**写回（`DocumentWriter.write(path)`），
+     * 而 content:// 不是可写路径，强行进入会在保存时失败。
+     */
+    editable: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -208,7 +216,7 @@ fun ReaderScreen(
                         bookmarks = BookmarkStore.remove(context, docPath, b.blockIndex)
                     }
                 },
-                editable = doc?.isEditable == true,
+                editable = editable && doc?.isEditable == true,
                 onEdit = {
                     val d = doc
                     if (d?.rawText != null && docPath.isNotEmpty()) {

@@ -48,17 +48,23 @@ object FileSourceFactory {
     fun fromUri(resolver: ContentResolver, uri: Uri): FileSource {
         var name = uri.lastPathSegment ?: "unknown"
         var size = 0L
-        var mime: String? = null
-        resolver.query(uri, null, null, null, null)?.use { c ->
-            val nameIdx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-            val sizeIdx = c.getColumnIndex(android.provider.OpenableColumns.SIZE)
-            if (c.moveToFirst()) {
-                if (nameIdx >= 0) c.getString(nameIdx)?.let { name = it }
-                if (sizeIdx >= 0) size = c.getLong(sizeIdx)
+        // 部分 provider 不支持 query（会抛异常），不能让整个打开流程失败：
+        // 拿不到 DISPLAY_NAME / SIZE 时退化为用 URI 末段当文件名。
+        runCatching {
+            resolver.query(uri, null, null, null, null)?.use { c ->
+                val nameIdx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                val sizeIdx = c.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                if (c.moveToFirst()) {
+                    if (nameIdx >= 0) c.getString(nameIdx)?.let { name = it }
+                    if (sizeIdx >= 0) size = c.getLong(sizeIdx)
+                }
             }
         }
-        mime = resolver.getType(uri)
-        val kind = FileKind.fromExtension(name)
+        val mime = runCatching { resolver.getType(uri) }.getOrNull()
+        val kind = FileKind.fromExtension(name).let {
+            // 与 fromFile 保持一致：无扩展名按纯文本处理
+            if (it == FileKind.UNKNOWN && !name.contains('.')) FileKind.TXT else it
+        }
         return FileSource(name, mime, size, kind) {
             resolver.openInputStream(uri) ?: throw IllegalStateException("无法打开文件流")
         }
